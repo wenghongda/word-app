@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Focus Word App</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background-color: #f0f2f5;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #main-container {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        #container {
+            position: relative;
+            width: 480px;
+            height: 360px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            background-color: #000;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); 
+            object-fit: cover;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+
+        #word-panel {
+            width: 360px;
+            height: 360px;
+            background-color: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+
+        .word-title {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+
+        .word-meaning {
+            font-size: 28px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        #result-display {
+            font-size: 15px;
+            margin-bottom: 15px;
+            color: #555;
+            min-height: 24px;
+        }
+
+        .letter-box {
+            display: inline-block;
+            width: 24px;
+            height: 30px;
+            line-height: 30px;
+            margin: 0 2px;
+            font-weight: bold;
+            font-size: 18px;
+            border-bottom: 2px solid #ccc;
+            text-align: center;
+        }
+
+        .letter-correct {
+            color: #2e7d32;
+            border-bottom-color: #2e7d32;
+        }
+
+        .letter-incorrect {
+            color: #c62828;
+            border-bottom-color: #c62828;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            font-size: 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover { background-color: #45a049; }
+        .mic-btn { background-color: #2196F3; }
+        .mic-btn:hover { background-color: #0b7dda; }
+
+        #status {
+            margin-top: 20px;
+            font-size: 20px;
+            font-weight: bold;
+            padding: 10px 25px;
+            border-radius: 50px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .normal { background-color: #e8f5e9; color: #2e7d32; border: 2px solid #81c784; } 
+        .warning { background-color: #ffebee; color: #c62828; border: 2px solid #ef9a9a; }
+    </style>
+</head>
+<body>
+
+    <div id="main-container">
+        <!-- 摄像头与专注度视图 -->
+        <div id="container">
+            <video id="input_video" autoplay playsinline></video>
+            <canvas id="output_canvas" width="480" height="360"></canvas>
+        </div>
+
+        <!-- 背单词与语音交互面板 -->
+        <div id="word-panel">
+            <div class="word-title">Voice Focus Word App</div>
+            <div id="chinese-meaning" class="word-meaning">Loading...</div>
+            
+            <!-- 目标字母槽位 -->
+            <div id="letter-container" style="margin-bottom: 15px;"></div>
+
+            <div id="result-display">第一步：请先读出整词</div>
+            
+            <div class="btn-group">
+                <button class="mic-btn" id="mic-btn" onclick="toggleSpeechRecognition()">🎤 开始语音</button>
+                <button onclick="nextWord()">下一个</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="status" class="warning">Initializing camera...</div>
+
+    <!-- 引入 MediaPipe 库 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+    <script type="module">
+        const wordList = [
+            { english: "abandon", chinese: "抛弃，放弃" },
+            { english: "ability", chinese: "能力，才能" },
+            { english: "able", chinese: "能够的" },
+            { english: "accept", chinese: "接受，同意" },
+            { english: "achieve", chinese: "实现，达到" }
+        ];
+
+        let currentIndex = 0;
+        let currentWord = "";
+        let recognition = null;
+        let isListening = false;
+        
+        // 状态控制：false = 第一阶段（读整词），true = 第二阶段（逐个字母拼写）
+        let spellingMode = false;
+        let spelledLetters = ""; 
+
+        // 渲染字母方块及高亮
+        function renderWordSlots(word, activeSpelling = "") {
+            const container = document.getElementById('letter-container');
+            container.innerHTML = "";
+            for (let i = 0; i < word.length; i++) {
+                const span = document.createElement('span');
+                span.className = "letter-box";
+                const targetChar = word[i];
+                span.innerText = targetChar; 
+                
+                if (spellingMode && i < activeSpelling.length) {
+                    if (activeSpelling[i].toLowerCase() === targetChar.toLowerCase()) {
+                        span.classList.add('letter-correct');
+                    } else {
+                        span.classList.add('letter-incorrect');
+                    }
+                }
+                container.appendChild(span);
+            }
+        }
+
+        window.nextWord = function() {
+            if (isListening && recognition) {
+                recognition.stop();
+                isListening = false;
+            }
+            currentIndex = Math.floor(Math.random() * wordList.length);
+            const item = wordList[currentIndex];
+            currentWord = item.english;
+            
+            spellingMode = false;
+            spelledLetters = "";
+
+            document.getElementById('chinese-meaning').innerText = item.chinese;
+            document.getElementById('result-display').innerText = "第一步：请大声读出整个单词";
+            document.getElementById('mic-btn').innerText = "🎤 开始语音";
+            renderWordSlots(currentWord, "");
+        }
+
+        nextWord();
+
+        // --- 两阶段全自动语音识别逻辑 ---
+        window.toggleSpeechRecognition = function() {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert("Your browser does not support Speech Recognition. Please use Google Chrome.");
+                return;
+            }
+
+            if (isListening) {
+                recognition.stop();
+                return;
+            }
+
+            recognition = new SpeechRecognition();
+            recognition.lang = 'en-US'; 
+            recognition.interimResults = true; 
+            recognition.maxAlternatives = 1;
+
+            let sessionTranscript = '';
+
+            recognition.onstart = function() {
+                isListening = true;
+                document.getElementById('mic-btn').innerText = "🛑 聆听中...";
+                if (!spellingMode) {
+                    document.getElementById('result-display').innerText = "正在听取整词发音...";
+                } else {
+                    document.getElementById('result-display').innerText = "请开始逐个字母拼写...";
+                }
+            };
+
+            recognition.onresult = function(event) {
+                let interim = '';
+                let final = '';
+
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        final += event.results[i][0].transcript;
+                    } else {
+                        interim += event.results[i][0].transcript;
+                    }
+                }
+
+                sessionTranscript = (final || interim).trim().toLowerCase();
+            };
+
+            recognition.onend = function() {
+                isListening = false;
+                document.getElementById('mic-btn').innerText = "🎤 开始语音";
+
+                const cleanInput = sessionTranscript.replace(/[^a-z]/g, '');
+                if (cleanInput.length === 0) return;
+
+                if (!spellingMode) {
+                    // --- 第一阶段结束：整词已读完，延迟 0.2s 自动进入拼写阶段 ---
+                    spellingMode = true;
+                    spelledLetters = "";
+                    
+                    document.getElementById('result-display').innerHTML = `✅ 整词 <b>"${cleanInput}"</b> 已接收！准备进入拼写...`;
+                    renderWordSlots(currentWord, "");
+
+                    setTimeout(() => {
+                        document.getElementById('result-display').innerHTML = `🎯 <b>第二阶段</b>：请开始逐个字母拼写`;
+                        try {
+                            recognition.start();
+                            isListening = true;
+                            document.getElementById('mic-btn').innerText = "🛑 拼写聆听中...";
+                        } catch (e) {
+                            console.log("Auto restart error:", e);
+                            document.getElementById('mic-btn').innerText = "🎤 开始语音";
+                        }
+                    }, 200); // 精准 0.2s 缓冲
+
+                } else {
+                    // --- 第二阶段：逐个字母拼写比对 ---
+                    spelledLetters += cleanInput;
+                    document.getElementById('result-display').innerText = `已拼写序列: "${spelledLetters}"`;
+                    
+                    renderWordSlots(currentWord, spelledLetters);
+
+                    if (spelledLetters.toLowerCase() === currentWord.toLowerCase()) {
+                        document.getElementById('result-display').innerHTML = "🎉 <span style='color:green;'>太棒了！拼写全部正确！</span>";
+                        isListening = false;
+                        document.getElementById('mic-btn').innerText = "🎤 开始语音";
+                    } else {
+                        // 延迟 0.2s 自动继续接收下一个字母拼写
+                        setTimeout(() => {
+                            try {
+                                recognition.start();
+                                isListening = true;
+                                document.getElementById('mic-btn').innerText = "🛑 拼写聆听中...";
+                            } catch (e) {
+                                document.getElementById('mic-btn').innerText = "🎤 开始语音";
+                            }
+                        }, 200);
+                    }
+                }
+            };
+
+            recognition.onerror = function(event) {
+                if (event.error !== 'no-speech') {
+                    document.getElementById('result-display').innerText = "错误: " + event.error;
+                }
+            };
+
+            recognition.start();
+        }
+
+        // --- 摄像头与面部专注度检测逻辑（已修复遮挡误判 Bug） ---
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusDiv = document.getElementById('status');
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                const nose = landmarks[1]; 
+                const leftEye = landmarks[33];
+                const rightEye = landmarks[263];
+
+                if (!nose || !leftEye || !rightEye) {
+                    updateStatus("❌ 镜头被遮挡或未检测到人脸", true);
+                    canvasCtx.restore();
+                    return;
+                }
+
+                const eyeMidpointX = (leftEye.x + rightEye.x) / 2;
+                const diffX = nose.x - eyeMidpointX;
+                const threshold = 0.07; 
+
+                if (diffX > threshold) {
+                    updateStatus("⚠️ 走神！向右看", true);
+                } else if (diffX < -threshold) {
+                    updateStatus("⚠️ 走神！向左看", true);
+                } else {
+                    updateStatus("✅ 专注中", false);
+                }
+            } else {
+                updateStatus("❌ 未检测到人脸", true);
+            }
+            canvasCtx.restore();
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => {
+          return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+        }});
+        
+        faceMesh.setOptions({
+          maxNumFaces: 1,                
+          refineLandmarks: false,        
+          minDetectionConfidence: 0.7,   
+          minTrackingConfidence: 0.5     
+        });
+        faceMesh.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+          onFrame: async () => {
+            await faceMesh.send({image: videoElement});
+          },
+          width: 480,
+          height: 360
+        });
+        camera.start();
+
+        function updateStatus(text, isWarning) {
+            if (statusDiv.innerText === text) return;
+            statusDiv.innerText = text;
+            statusDiv.className = isWarning ? "warning" : "normal";
+        }
+    </script>
+</body>
+</html>
